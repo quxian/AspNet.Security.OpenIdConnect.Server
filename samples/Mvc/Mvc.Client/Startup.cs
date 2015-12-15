@@ -6,7 +6,6 @@ using Microsoft.AspNet.Builder;
 using Microsoft.AspNet.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace Mvc.Client {
@@ -24,6 +23,7 @@ namespace Mvc.Client {
         public void Configure(IApplicationBuilder app) {
             var factory = app.ApplicationServices.GetRequiredService<ILoggerFactory>();
             factory.AddConsole();
+            factory.AddDebug();
 
             // Insert a new cookies middleware in the pipeline to store the user
             // identity after he has been redirected from the identity provider.
@@ -39,6 +39,7 @@ namespace Mvc.Client {
             app.UseOpenIdConnectAuthentication(options => {
                 options.AuthenticationScheme = OpenIdConnectDefaults.AuthenticationScheme;
                 options.RequireHttpsMetadata = false;
+                options.SaveTokensAsClaims = true;
 
                 // Note: these settings must match the application details
                 // inserted in the database at the server level.
@@ -53,10 +54,6 @@ namespace Mvc.Client {
                 // retrieve the identity provider's configuration and spare you from setting
                 // the different endpoints URIs or the token validation parameters explicitly.
                 options.Authority = "http://localhost:54540/";
-
-                // Note: the resource property represents the different endpoints the
-                // access token should be issued for (values must be space-delimited).
-                options.Resource = "http://localhost:54540/";
             });
 
             app.UseStaticFiles();

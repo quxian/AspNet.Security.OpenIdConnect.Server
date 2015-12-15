@@ -9,10 +9,10 @@ using System.Collections.Generic;
 using System.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Cryptography;
+using System.Text.Encodings.Web;
 using Microsoft.AspNet.Authentication;
 using Microsoft.AspNet.Http;
 using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.WebEncoders;
 
 namespace AspNet.Security.OpenIdConnect.Server {
     /// <summary>
@@ -112,8 +112,8 @@ namespace AspNet.Security.OpenIdConnect.Server {
         /// The SystemWeb host on IIS will use ASP.NET machine key data protection, and HttpListener and other self-hosted
         /// servers will use DPAPI data protection.
         /// This property is only used when <see cref="AccessTokenHandler"/> is explicitly set to <value>null</value>
-        /// and when <see cref="IOpenIdConnectServerProvider.CreateAccessToken"/> doesn't call
-        /// <see cref="BaseControlContext{OpenIdConnectServerOptions}.HandleResponse"/>.
+        /// and when <see cref="IOpenIdConnectServerProvider.SerializeAccessToken"/>
+        /// doesn't call <see cref="BaseControlContext.HandleResponse"/>.
         /// </summary>
         public ISecureDataFormat<AuthenticationTicket> AccessTokenFormat { get; set; }
 
@@ -122,24 +122,23 @@ namespace AspNet.Security.OpenIdConnect.Server {
         /// If not provided by the application the default data protection provider depends on the host server. 
         /// The SystemWeb host on IIS will use ASP.NET machine key data protection, and HttpListener and other self-hosted
         /// servers will use DPAPI data protection.
-        /// This property is only used when <see cref="IOpenIdConnectServerProvider.CreateRefreshToken"/> doesn't call
-        /// <see cref="BaseControlContext{OpenIdConnectServerOptions}.HandleResponse"/>.
+        /// This property is only used when <see cref="IOpenIdConnectServerProvider.SerializeRefreshToken"/>
+        /// doesn't call <see cref="BaseControlContext.HandleResponse"/>.
         /// </summary>
         public ISecureDataFormat<AuthenticationTicket> RefreshTokenFormat { get; set; }
 
         /// <summary>
-        /// The <see cref="JwtSecurityTokenHandler"/> instance used to forge access tokens.
-        /// You can set it to null to produce opaque tokens serialized by the data protector subsytem.
-        /// This property is only used when <see cref="IOpenIdConnectServerProvider.CreateAccessToken"/> doesn't call
-        /// <see cref="BaseControlContext{OpenIdConnectServerOptions}.HandleResponse"/>.
+        /// The <see cref="SecurityTokenHandler"/> instance used to forge access tokens.
+        /// Note: this property is only used when <see cref="IOpenIdConnectServerProvider.SerializeAccessToken"/>
+        /// doesn't call <see cref="BaseControlContext.HandleResponse"/>.
         /// </summary>
-        public JwtSecurityTokenHandler AccessTokenHandler { get; set; } = new JwtSecurityTokenHandler();
+        public SecurityTokenHandler AccessTokenHandler { get; set; }
 
         /// <summary>
         /// The <see cref="JwtSecurityTokenHandler"/> instance used to forge identity tokens.
         /// You can replace the default instance to change the way id_tokens are serialized.
-        /// This property is only used when <see cref="IOpenIdConnectServerProvider.CreateIdentityToken"/> doesn't call
-        /// <see cref="BaseControlContext{OpenIdConnectServerOptions}.HandleResponse"/>.
+        /// This property is only used when <see cref="IOpenIdConnectServerProvider.SerializeIdentityToken"/>
+        /// doesn't call <see cref="BaseControlContext.HandleResponse"/>.
         /// </summary>
         public JwtSecurityTokenHandler IdentityTokenHandler { get; set; } = new JwtSecurityTokenHandler();
 
@@ -163,10 +162,10 @@ namespace AspNet.Security.OpenIdConnect.Server {
         public TimeSpan IdentityTokenLifetime { get; set; } = TimeSpan.FromMinutes(20);
 
         /// <summary>
-        /// The period of time the refresh token remains valid after being issued. The default is 6 hours.
+        /// The period of time the refresh token remains valid after being issued. The default is 14 days.
         /// The client application is expected to start a whole new authentication flow after the refresh token has expired. 
         /// </summary>
-        public TimeSpan RefreshTokenLifetime { get; set; } = TimeSpan.FromHours(6);
+        public TimeSpan RefreshTokenLifetime { get; set; } = TimeSpan.FromDays(14);
 
         /// <summary>
         /// Determines whether refresh tokens issued during a grant_type=refresh_token request should be generated
@@ -207,7 +206,7 @@ namespace AspNet.Security.OpenIdConnect.Server {
         /// Used to sanitize HTML responses. If you don't provide an explicit instance,
         /// one will be automatically retrieved through the dependency injection system.
         /// </summary>
-        public IHtmlEncoder HtmlEncoder { get; set; }
+        public HtmlEncoder HtmlEncoder { get; set; }
 
         /// <summary>
         /// The random number generator used for cryptographic operations.

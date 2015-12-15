@@ -49,7 +49,7 @@ namespace AspNet.Security.OpenIdConnect.Server {
             if (!notification.IsAuthorizationEndpoint &&
                 !notification.IsLogoutEndpoint &&
                 !notification.IsProfileEndpoint) {
-                return null;
+                return AuthenticateResult.Skip();
             }
 
             // Try to retrieve the current OpenID Connect request from the ASP.NET context.
@@ -65,11 +65,11 @@ namespace AspNet.Security.OpenIdConnect.Server {
 
                 else if (string.Equals(Request.Method, "POST", StringComparison.OrdinalIgnoreCase)) {
                     if (string.IsNullOrEmpty(Request.ContentType)) {
-                        return null;
+                        return AuthenticateResult.Skip();
                     }
 
                     else if (!Request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase)) {
-                        return null;
+                        return AuthenticateResult.Skip();
                     }
 
                     var form = await Request.ReadFormAsync(Context.RequestAborted);
@@ -79,21 +79,21 @@ namespace AspNet.Security.OpenIdConnect.Server {
             }
 
             // Missing or invalid requests are ignored in HandleAuthenticateAsync:
-            // in this case, null is always returned to indicate authentication failed.
+            // in this case, Skip is used to indicate authentication failed.
             if (request == null) {
-                return null;
+                return AuthenticateResult.Skip();
             }
 
             if (notification.IsAuthorizationEndpoint || notification.IsLogoutEndpoint) {
                 if (string.IsNullOrEmpty(request.IdTokenHint)) {
-                    return null;
+                    return AuthenticateResult.Skip();
                 }
 
-                var ticket = await ReceiveIdentityTokenAsync(request.IdTokenHint, request);
+                var ticket = await DeserializeIdentityTokenAsync(request.IdTokenHint, request);
                 if (ticket == null) {
-                    Logger.LogVerbose("Invalid id_token_hint");
+                    Logger.LogDebug("Invalid id_token_hint");
 
-                    return null;
+                    return AuthenticateResult.Skip();
                 }
 
                 // Tickets are returned even if they
@@ -110,37 +110,37 @@ namespace AspNet.Security.OpenIdConnect.Server {
                 else {
                     string header = Request.Headers[HeaderNames.Authorization];
                     if (string.IsNullOrEmpty(header)) {
-                        return null;
+                        return AuthenticateResult.Skip();
                     }
 
                     if (!header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) {
-                        return null;
+                        return AuthenticateResult.Skip();
                     }
 
                     token = header.Substring("Bearer ".Length);
                     if (string.IsNullOrWhiteSpace(token)) {
-                        return null;
+                        return AuthenticateResult.Skip();
                     }
                 }
 
-                var ticket = await ReceiveAccessTokenAsync(token, request);
+                var ticket = await DeserializeAccessTokenAsync(token, request);
                 if (ticket == null) {
-                    Logger.LogVerbose("Invalid access_token");
+                    Logger.LogDebug("Invalid access_token");
 
-                    return null;
+                    return AuthenticateResult.Skip();
                 }
 
                 if (!ticket.Properties.ExpiresUtc.HasValue ||
                      ticket.Properties.ExpiresUtc < Options.SystemClock.UtcNow) {
-                    Logger.LogVerbose("Expired access_token");
+                    Logger.LogDebug("Expired access_token");
 
-                    return null;
+                    return AuthenticateResult.Skip();
                 }
 
                 return AuthenticateResult.Success(ticket);
             }
 
-            return null;
+            return AuthenticateResult.Skip();
         }
 
         public override async Task<bool> HandleRequestAsync() {
@@ -191,13 +191,12 @@ namespace AspNet.Security.OpenIdConnect.Server {
                 return false;
             }
 
-            // Reject non-HTTPS requests handled by the OpenID Connect
-            // server middleware if AllowInsecureHttp is not set to true.
+            // Reject non-HTTPS requests handled by ASOS if AllowInsecureHttp is not set to true.
             if (!Options.AllowInsecureHttp && !Request.IsHttps) {
-                Logger.LogWarning("The HTTP request was rejected because AllowInsecureHttp was false.");
-
+                // Return the native error page for endpoints involving the user participation.
                 if (notification.IsAuthorizationEndpoint || notification.IsLogoutEndpoint) {
-                    // Return the native error page for endpoints involving the user participation.
+                    Logger.LogWarning("The HTTP request was rejected because AllowInsecureHttp was false.");
+
                     await SendNativeErrorPageAsync(new OpenIdConnectMessage {
                         Error = OpenIdConnectConstants.Errors.InvalidRequest,
                         ErrorDescription = "This server only accepts HTTPS requests."
@@ -206,10 +205,12 @@ namespace AspNet.Security.OpenIdConnect.Server {
                     return true;
                 }
 
+                // Return a JSON error for endpoints that don't involve the user participation.
                 else if (notification.IsTokenEndpoint || notification.IsProfileEndpoint ||
                          notification.IsValidationEndpoint || notification.IsConfigurationEndpoint ||
                          notification.IsCryptographyEndpoint) {
-                    // Return a JSON error for endpoints that don't involve the user participation.
+                    Logger.LogWarning("The HTTP request was rejected because AllowInsecureHttp was false.");
+
                     await SendErrorPayloadAsync(new OpenIdConnectMessage {
                         Error = OpenIdConnectConstants.Errors.InvalidRequest,
                         ErrorDescription = "This server only accepts HTTPS requests."
@@ -278,13 +279,12 @@ namespace AspNet.Security.OpenIdConnect.Server {
                 return;
             }
 
-            if (!context.Principal.HasClaim(claim => claim.Type == ClaimTypes.NameIdentifier) &&
-                !context.Principal.HasClaim(claim => claim.Type == JwtRegisteredClaimNames.Sub)) {
+            if (!context.Principal.HasClaim(claim => claim.Type == ClaimTypes.NameIdentifier)) {
                 Logger.LogError("The returned identity doesn't contain the mandatory ClaimTypes.NameIdentifier claim.");
 
                 await SendNativeErrorPageAsync(new OpenIdConnectMessage {
                     Error = OpenIdConnectConstants.Errors.ServerError,
-                    ErrorDescription = "no ClaimTypes.NameIdentifier or sub claim found"
+                    ErrorDescription = "The mandatory ClaimTypes.NameIdentifier claim was not found."
                 });
 
                 return;
@@ -297,39 +297,36 @@ namespace AspNet.Security.OpenIdConnect.Server {
                 State = request.State
             };
 
-            // Associate client_id with all subsequent tickets.
-            context.Properties[OpenIdConnectConstants.Extra.ClientId] = request.ClientId;
-
             if (!string.IsNullOrEmpty(request.Nonce)) {
                 // Keep the original nonce parameter for later comparison.
-                context.Properties[OpenIdConnectConstants.Extra.Nonce] = request.Nonce;
+                context.Properties[OpenIdConnectConstants.Properties.Nonce] = request.Nonce;
             }
 
             if (!string.IsNullOrEmpty(request.RedirectUri)) {
                 // Keep the original redirect_uri parameter for later comparison.
-                context.Properties[OpenIdConnectConstants.Extra.RedirectUri] = request.RedirectUri;
+                context.Properties[OpenIdConnectConstants.Properties.RedirectUri] = request.RedirectUri;
             }
 
             // Note: the application is allowed to specify a different "resource"
             // parameter when calling AuthenticationManager.SignInAsync: in this case,
             // don't replace the "resource" property stored in the authentication ticket.
             if (!string.IsNullOrEmpty(request.Resource) &&
-                !context.Properties.ContainsKey(OpenIdConnectConstants.Extra.Resource)) {
+                !context.Properties.ContainsKey(OpenIdConnectConstants.Properties.Resources)) {
                 // Keep the original resource parameter for later comparison.
-                context.Properties[OpenIdConnectConstants.Extra.Resource] = request.Resource;
+                context.Properties[OpenIdConnectConstants.Properties.Resources] = request.Resource;
             }
 
             // Note: the application is allowed to specify a different "scope"
             // parameter when calling AuthenticationManager.SignInAsync: in this case,
             // don't replace the "scope" property stored in the authentication ticket.
             if (!string.IsNullOrEmpty(request.Scope) &&
-                !context.Properties.ContainsKey(OpenIdConnectConstants.Extra.Scope)) {
+                !context.Properties.ContainsKey(OpenIdConnectConstants.Properties.Scopes)) {
                 // Keep the original scope parameter for later comparison.
-                context.Properties[OpenIdConnectConstants.Extra.Scope] = request.Scope;
+                context.Properties[OpenIdConnectConstants.Properties.Scopes] = request.Scope;
             }
 
             // Determine whether an authorization code should be returned
-            // and invoke CreateAuthorizationCodeAsync if necessary.
+            // and invoke SerializeAuthorizationCodeAsync if necessary.
             if (request.ContainsResponseType(OpenIdConnectConstants.ResponseTypes.Code)) {
                 // Make sure to create a copy of the authentication properties
                 // to avoid modifying the properties set on the original ticket.
@@ -340,12 +337,12 @@ namespace AspNet.Security.OpenIdConnect.Server {
                 // of the authorization code with the lifetime of the other tokens.
                 properties.IssuedUtc = properties.ExpiresUtc = null;
 
-                response.Code = await CreateAuthorizationCodeAsync(context.Principal, properties, request, response);
+                response.Code = await SerializeAuthorizationCodeAsync(context.Principal, properties, request, response);
 
                 // Ensure that an authorization code is issued to avoid returning an invalid response.
                 // See http://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#Combinations
                 if (string.IsNullOrEmpty(response.Code)) {
-                    Logger.LogError("CreateAuthorizationCodeAsync returned no authorization code");
+                    Logger.LogError("SerializeAuthorizationCodeAsync returned no authorization code");
 
                     await SendNativeErrorPageAsync(new OpenIdConnectMessage {
                         Error = OpenIdConnectConstants.Errors.ServerError,
@@ -357,33 +354,38 @@ namespace AspNet.Security.OpenIdConnect.Server {
             }
 
             // Determine whether an access token should be returned
-            // and invoke CreateAccessTokenAsync if necessary.
+            // and invoke SerializeAccessTokenAsync if necessary.
             if (request.ContainsResponseType(OpenIdConnectConstants.ResponseTypes.Token)) {
                 // Make sure to create a copy of the authentication properties
                 // to avoid modifying the properties set on the original ticket.
                 var properties = new AuthenticationProperties(context.Properties).Copy();
 
+                var resources = properties.GetProperty(OpenIdConnectConstants.Properties.Resources);
+                if (string.IsNullOrEmpty(resources)) {
+                    Logger.LogInformation("No explicit resource has been associated with the authentication ticket: " +
+                                          "the access token will thus be issued without any audience attached.");
+                }
+
                 // Note: when the "resource" parameter added to the OpenID Connect response
-                // is identical to the request parameter, keeping it is not necessary.
-                var resource = properties.GetProperty(OpenIdConnectConstants.Extra.Resource);
-                if (!string.Equals(request.Resource, resource, StringComparison.Ordinal)) {
-                    response.Resource = resource;
+                // is identical to the request parameter, setting it is not necessary.
+                if (!string.Equals(request.Resource, resources, StringComparison.Ordinal)) {
+                    response.Resource = resources;
                 }
 
                 // Note: when the "scope" parameter added to the OpenID Connect response
-                // is identical to the request parameter, keeping it is not necessary.
-                var scope = properties.GetProperty(OpenIdConnectConstants.Extra.Scope);
-                if (!string.Equals(request.Scope, scope, StringComparison.Ordinal)) {
-                    response.Scope = scope;
+                // is identical to the request parameter, setting it is not necessary.
+                var scopes = properties.GetProperty(OpenIdConnectConstants.Properties.Scopes);
+                if (!string.Equals(request.Scope, scopes, StringComparison.Ordinal)) {
+                    response.Scope = scopes;
                 }
 
                 response.TokenType = OpenIdConnectConstants.TokenTypes.Bearer;
-                response.AccessToken = await CreateAccessTokenAsync(context.Principal, properties, request, response);
+                response.AccessToken = await SerializeAccessTokenAsync(context.Principal, properties, request, response);
 
                 // Ensure that an access token is issued to avoid returning an invalid response.
                 // See http://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#Combinations
                 if (string.IsNullOrEmpty(response.AccessToken)) {
-                    Logger.LogError("CreateAccessTokenAsync returned no access token.");
+                    Logger.LogError("SerializeAccessTokenAsync returned no access token.");
 
                     await SendNativeErrorPageAsync(new OpenIdConnectMessage {
                         Error = OpenIdConnectConstants.Errors.ServerError,
@@ -393,8 +395,8 @@ namespace AspNet.Security.OpenIdConnect.Server {
                     return;
                 }
 
-                // properties.ExpiresUtc is automatically set by CreateAccessTokenAsync but the end user
-                // is free to set a null value directly in the CreateAccessToken event.
+                // properties.ExpiresUtc is automatically set by SerializeAccessTokenAsync but the end user
+                // is free to set a null value directly in the SerializeAccessToken event.
                 if (properties.ExpiresUtc.HasValue && properties.ExpiresUtc > Options.SystemClock.UtcNow) {
                     var lifetime = properties.ExpiresUtc.Value - Options.SystemClock.UtcNow;
                     var expiration = (long) (lifetime.TotalSeconds + .5);
@@ -404,7 +406,7 @@ namespace AspNet.Security.OpenIdConnect.Server {
             }
 
             // Determine whether an identity token should be returned
-            // and invoke CreateIdentityTokenAsync if necessary.
+            // and invoke SerializeIdentityTokenAsync if necessary.
             // Note: the identity token MUST be created after the authorization code
             // and the access token to create appropriate at_hash and c_hash claims.
             if (request.ContainsResponseType(OpenIdConnectConstants.ResponseTypes.IdToken)) {
@@ -412,12 +414,12 @@ namespace AspNet.Security.OpenIdConnect.Server {
                 // to avoid modifying the properties set on the original ticket.
                 var properties = new AuthenticationProperties(context.Properties).Copy();
 
-                response.IdToken = await CreateIdentityTokenAsync(context.Principal, properties, request, response);
+                response.IdToken = await SerializeIdentityTokenAsync(context.Principal, properties, request, response);
 
                 // Ensure that an identity token is issued to avoid returning an invalid response.
                 // See http://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#Combinations
                 if (string.IsNullOrEmpty(response.IdToken)) {
-                    Logger.LogError("CreateIdentityTokenAsync returned no identity token.");
+                    Logger.LogError("SerializeIdentityTokenAsync returned no identity token.");
 
                     await SendNativeErrorPageAsync(new OpenIdConnectMessage {
                         Error = OpenIdConnectConstants.Errors.ServerError,
@@ -564,7 +566,7 @@ namespace AspNet.Security.OpenIdConnect.Server {
                     // by IOpenIdConnectServerProvider.ValidateClientRedirectUri,
                     // it's still safer to encode it to avoid cross-site scripting attacks
                     // if the authorization server has a relaxed policy concerning redirect URIs.
-                    writer.WriteLine("<form name='form' method='post' action='" + Options.HtmlEncoder.HtmlEncode(response.RedirectUri) + "'>");
+                    writer.WriteLine("<form name='form' method='post' action='" + Options.HtmlEncoder.Encode(response.RedirectUri) + "'>");
 
                     foreach (var parameter in response.Parameters) {
                         // Don't include redirect_uri in the form.
@@ -572,8 +574,8 @@ namespace AspNet.Security.OpenIdConnect.Server {
                             continue;
                         }
 
-                        var name = Options.HtmlEncoder.HtmlEncode(parameter.Key);
-                        var value = Options.HtmlEncoder.HtmlEncode(parameter.Value);
+                        var name = Options.HtmlEncoder.Encode(parameter.Key);
+                        var value = Options.HtmlEncoder.Encode(parameter.Value);
 
                         writer.WriteLine("<input type='hidden' name='" + name + "' value='" + value + "' />");
                     }

@@ -21,13 +21,15 @@
             "version": "1.0.0-*"
         },
 
-        "Microsoft.Extensions.WebEncoders.Core": "1.0.0-*",
-
         "Newtonsoft.Json": "7.0.1"
     },
 
     "frameworks": {
         "dnx451": { },
-        "dnxcore50": { }
+        "dnxcore50": {
+            "dependencies": {
+                "System.Security.Cryptography.OpenSsl": "4.0.0-*"
+            }
+        }
     }
 }
